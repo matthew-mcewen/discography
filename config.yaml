@@ -1,0 +1,13 @@
+channels:
+  submissions: 1520820805465014422        # Channel ID to monitor for image posts
+  announcements: 1520820872443859025      # Channel ID for winner announcements
+  bot_commands: 1520820836821373009       # Channel ID where users can run bot commands
+  leaderboard: 1520820946057953452        # Channel ID where the pinned leaderboard embed lives
+
+roles:
+  notification: 1520821170797150269       # Role ID pinged on winner announcements
+  dry_run_admin: 1520821170797150269      # Role ID allowed to use /dryrun-* commands
+
+points:
+  name: "BasicPoints"
+  emoji: "🏆"           # Unicode emoji or Discord custom emote string e.g. <:star:123456789>
