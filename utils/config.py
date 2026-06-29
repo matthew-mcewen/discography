@@ -25,10 +25,17 @@ class PointsConfig:
 
 
 @dataclass(frozen=True)
+class PointMultiplier:
+    role: int
+    multiplier: float
+
+
+@dataclass(frozen=True)
 class BotConfig:
     channels: ChannelConfig
     roles: RoleConfig
     points: PointsConfig
+    multiply_points: tuple[PointMultiplier, ...] = ()
 
 
 def load_config(path: str = "config.yaml") -> BotConfig:
@@ -47,8 +54,14 @@ def load_config(path: str = "config.yaml") -> BotConfig:
             if key not in data[section]:
                 raise ValueError(f"config.yaml missing '{section}.{key}'")
 
+    multiply_points = tuple(
+        PointMultiplier(role=int(m["role"]), multiplier=float(m["multiplier"]))
+        for m in data.get("multiplyPoints", [])
+    )
+
     return BotConfig(
         channels=ChannelConfig(**data["channels"]),
         roles=RoleConfig(**data["roles"]),
         points=PointsConfig(**data["points"]),
+        multiply_points=multiply_points,
     )

@@ -91,6 +91,14 @@ class AdminCog(commands.Cog, name="AdminCog"):
 
         await interaction.followup.send("\n".join(lines), ephemeral=True)
 
+        submission_embeds = result.get("submission_embeds", [])
+        if submission_embeds:
+            await interaction.followup.send(
+                "**Submission embeds (as they will appear in the announcement):**",
+                embeds=submission_embeds,
+                ephemeral=True,
+            )
+
     # ------------------------------------------------------------------
     # /dryrun-leaderboard
     # ------------------------------------------------------------------

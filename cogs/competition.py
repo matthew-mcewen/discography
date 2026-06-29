@@ -154,18 +154,50 @@ class CompetitionCog(commands.Cog):
 
         announcement_text = "\n".join(lines)
 
+        # Build submission embeds: highest-voted submission per user, up to 3
+        top_submissions = await db.get_top_submission_per_user(self._pool, period["id"], limit=3)
+        submission_embeds: list[discord.Embed] = []
+        for rank, sub in enumerate(top_submissions, start=1):
+            medal = RANK_MEDALS.get(rank, f"{rank}.")
+            embed = discord.Embed(
+                description=f"{medal} <@{sub['user_id']}> — {sub['net_trophy_count']} {TROPHY}",
+            )
+            embed.set_image(url=sub["image_url"])
+            submission_embeds.append(embed)
+
         # Build full awards list: rank prizes + net trophy points for every submitter
         rank_prizes: dict[int, int] = {r["user_id"]: r["points_awarded"] for r in rank_results}
+
+        guild = self.bot.guilds[0] if self.bot.guilds else None
+        if guild is None:
+            logger.warning("announce_winners_task: bot is in no guilds; point multipliers skipped.")
+
         all_awards: list[dict[str, Any]] = []
         for user in all_users:
             prize = rank_prizes.get(user["user_id"], 0)
             net = user["net_trophy_count"]
             total = prize + net
+
+            multiplier = 1.0
+            if guild is not None and self.config.multiply_points:
+                member = guild.get_member(user["user_id"])
+                if member is not None:
+                    member_role_ids = {r.id for r in member.roles}
+                    applicable = [
+                        mp.multiplier
+                        for mp in self.config.multiply_points
+                        if mp.role in member_role_ids
+                    ]
+                    if applicable:
+                        multiplier = max(applicable)
+
+            total = round(total * multiplier)
             all_awards.append({
                 "user_id": user["user_id"],
                 "display_name": user["display_name"],
                 "rank_points": prize,
                 "trophy_points": net,
+                "multiplier": multiplier,
                 "total": total,
             })
         bulk_awards = [(a["user_id"], a["total"]) for a in all_awards if a["total"] > 0]
@@ -175,6 +207,7 @@ class CompetitionCog(commands.Cog):
             if announcements_ch:
                 await announcements_ch.send(
                     announcement_text,
+                    embeds=submission_embeds,
                     allowed_mentions=discord.AllowedMentions(roles=True, users=True),
                 )
             await db.save_period_results(self._pool, rank_results)
@@ -190,7 +223,7 @@ class CompetitionCog(commands.Cog):
                 except Exception:
                     logger.exception("Failed to update leaderboard after winner announcement.")
 
-        return {"announcement": announcement_text, "awards": all_awards}
+        return {"announcement": announcement_text, "awards": all_awards, "submission_embeds": submission_embeds}
 
 
 async def setup(bot: DiscographyBot) -> None:

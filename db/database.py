@@ -324,6 +324,43 @@ async def get_period_leaderboard(
     return [dict(r) for r in rows]
 
 
+async def get_top_submission_per_user(
+    pool: psycopg_pool.AsyncConnectionPool,
+    period_id: int,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """
+    Returns the single highest-voted submission for each user, ranked globally by that vote count.
+    Ties within a user broken by earliest submission; ties across users broken by submission_id.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                WITH best_per_user AS (
+                    SELECT DISTINCT ON (s.user_id)
+                        s.id AS submission_id,
+                        s.user_id,
+                        u.display_name,
+                        GREATEST(s.trophy_count - 1, 0) AS net_trophy_count,
+                        s.image_url
+                    FROM submissions s
+                    JOIN users u ON u.user_id = s.user_id
+                    WHERE s.period_id = %s AND s.is_deleted = FALSE
+                    ORDER BY s.user_id,
+                             GREATEST(s.trophy_count - 1, 0) DESC,
+                             s.submitted_at ASC
+                )
+                SELECT * FROM best_per_user
+                ORDER BY net_trophy_count DESC, submission_id ASC
+                LIMIT %s
+                """,
+                (period_id, limit),
+            )
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
 async def save_period_results(
     pool: psycopg_pool.AsyncConnectionPool,
     results: list[dict[str, Any]],

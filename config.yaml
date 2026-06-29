@@ -11,3 +11,11 @@ roles:
 points:
   name: "BasicPoints"
   emoji: "🏆"           # Unicode emoji or Discord custom emote string e.g. <:star:123456789>
+
+# Optional: award a points multiplier to users with specific roles.
+# If a user has multiple matching roles, the highest multiplier wins.
+# multiplyPoints:
+#   - role: 123456789012345678   # Server Booster role ID
+#     multiplier: 1.5
+#   - role: 987654321098765432   # VIP role ID
+#     multiplier: 2.0
