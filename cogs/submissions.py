@@ -60,6 +60,14 @@ class SubmissionsCog(commands.Cog):
 
         images = _collect_images(message)
 
+        if self.config.competition.mode == "basic":
+            # Basic mode treats the channel as shared/general-purpose: only
+            # react to clean single-image posts, leave everything else alone.
+            if len(images) != 1:
+                return
+            await self._accept_basic(message, images[0])
+            return
+
         if len(images) == 0:
             await self._reject(
                 message,
@@ -166,6 +174,40 @@ class SubmissionsCog(commands.Cog):
         except Exception:
             logger.exception("Failed to save submission for embed message %s", embed_msg.id)
 
+    async def _accept_basic(self, message: discord.Message, image: ImageSource) -> None:
+        """
+        Basic mode: react directly to the original post instead of deleting and
+        reposting it. The original message doubles as the vote target, so it's
+        recorded as both original_message_id and embed_message_id.
+        """
+        period = await db.ensure_active_period(self._pool)
+        await db.upsert_user(
+            self._pool,
+            message.author.id,
+            str(message.author),
+            message.author.display_name,
+        )
+
+        image_url = image.url if isinstance(image, discord.Attachment) else image
+
+        try:
+            await message.add_reaction(TROPHY)
+        except discord.Forbidden:
+            logger.warning("Missing permissions to add reaction to message %s", message.id)
+            return
+
+        try:
+            await db.create_submission(
+                self._pool,
+                period["id"],
+                message.author.id,
+                message.id,
+                message.id,
+                image_url,
+            )
+        except Exception:
+            logger.exception("Failed to save submission for message %s", message.id)
+
     # ------------------------------------------------------------------
     # Reaction cleanup — remove any non-trophy reactions in real time
     # ------------------------------------------------------------------
@@ -177,6 +219,9 @@ class SubmissionsCog(commands.Cog):
         if payload.user_id == self.bot.user.id:
             return
         if str(payload.emoji) == TROPHY:
+            return
+        if self.config.competition.mode == "basic":
+            # Basic mode doesn't enforce trophy-only reactions.
             return
 
         known = await db.is_known_embed_message(self._pool, payload.message_id)

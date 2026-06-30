@@ -99,3 +99,20 @@ CREATE TABLE IF NOT EXISTS prediction_bets (
 
 -- Backfill for databases created before the odds column existed.
 ALTER TABLE prediction_bets ADD COLUMN IF NOT EXISTS odds DOUBLE PRECISION NOT NULL DEFAULT 1.0;
+
+CREATE TABLE IF NOT EXISTS reaction_roles (
+    id          SERIAL      PRIMARY KEY,
+    role_id     BIGINT      NOT NULL UNIQUE,
+    -- Canonical match key for the emoji: "id:<custom emoji id>" or "name:<unicode char>".
+    -- Keyed this way so a renamed custom emote still matches by its stable ID.
+    emoji_key   TEXT        NOT NULL UNIQUE,
+    -- str(discord.PartialEmoji) — used to re-add the reaction to the panel and for display.
+    emoji_str   TEXT        NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Generic key/value store for small bits of bot state (e.g. the reaction role panel message id).
+CREATE TABLE IF NOT EXISTS bot_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

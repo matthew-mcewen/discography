@@ -3,16 +3,29 @@ channels:
   announcements: 1520820872443859025      # Channel ID for winner announcements
   bot_commands: 1520820836821373009       # Channel ID where users can run bot commands
   leaderboard: 1520820946057953452        # Channel ID where the pinned leaderboard embed lives
+  reaction_roles: 0                       # Channel ID where the reaction-roles panel embed lives (0 = disabled)
 
 roles:
   notification: 1520821170797150269       # Role ID pinged on winner announcements
   dry_run_admin: 1520821170797150269      # Role ID allowed to use /dryrun-* commands
   point_awarder: 1520821170797150269                        # Role ID allowed to use /awardpoints (0 = disabled)
   predict_starter: 1520821170797150269                      # Role ID allowed to use /createpredict and /finishpredict (0 = disabled)
+  reaction_role_admin: 0                                     # Role ID allowed to use /reactionrole-* commands (0 = disabled)
 
 points:
   name: "BasicMiles"
   emoji: "🏆"           # Unicode emoji or Discord custom emote string e.g. <:star:123456789>
+
+competition:
+  # "dedicated" - full feature set: invalid posts are rejected, valid posts are
+  #               deleted and reposted as a voting embed, only the vote emote
+  #               is allowed to remain on it. Best for larger servers with a
+  #               channel dedicated solely to submissions.
+  # "basic"     - lightweight mode for smaller servers: the vote emote is added
+  #               directly to single-image posts in the submissions channel.
+  #               The original message and any other reactions are left alone;
+  #               messages with zero or multiple images are silently ignored.
+  mode: dedicated
 
 coinflip:
   max_daily_flips: 3                     # Maximum coin flips per user per day (UTC)

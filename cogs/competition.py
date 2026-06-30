@@ -61,13 +61,15 @@ class CompetitionCog(commands.Cog):
                 logger.warning("Failed to fetch message %s: %s", sub["embed_message_id"], exc)
                 continue
 
-            # Remove any non-🏆 reactions (belt-and-suspenders)
-            for reaction in msg.reactions:
-                if str(reaction.emoji) != TROPHY:
-                    try:
-                        await msg.clear_reaction(reaction.emoji)
-                    except (discord.Forbidden, discord.HTTPException):
-                        pass
+            # Remove any non-🏆 reactions (belt-and-suspenders).
+            # Skipped in basic mode, which deliberately leaves other reactions alone.
+            if self.config.competition.mode != "basic":
+                for reaction in msg.reactions:
+                    if str(reaction.emoji) != TROPHY:
+                        try:
+                            await msg.clear_reaction(reaction.emoji)
+                        except (discord.Forbidden, discord.HTTPException):
+                            pass
 
             # Find the 🏆 reaction count
             count = 0

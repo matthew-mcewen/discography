@@ -26,6 +26,7 @@ COGS = [
     "cogs.commands",
     "cogs.admin",
     "cogs.predictions",
+    "cogs.reaction_roles",
 ]
 
 

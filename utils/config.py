@@ -10,6 +10,7 @@ class ChannelConfig:
     announcements: int
     bot_commands: int
     leaderboard: int
+    reaction_roles: int = 0
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class RoleConfig:
     dry_run_admin: int
     point_awarder: int = 0
     predict_starter: int = 0
+    reaction_role_admin: int = 0
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,17 @@ class PredictionsConfig:
 
 
 @dataclass(frozen=True)
+class CompetitionConfig:
+    # "dedicated" — full feature set: invalid posts are rejected, valid posts are
+    #               deleted and reposted as a voting embed, only the vote emote
+    #               is allowed to remain on it.
+    # "basic"     — lightweight mode for smaller servers: the vote emote is added
+    #               directly to single-image posts in the submissions channel.
+    #               The original message and any other reactions are left alone.
+    mode: str = "dedicated"
+
+
+@dataclass(frozen=True)
 class BotConfig:
     channels: ChannelConfig
     roles: RoleConfig
@@ -53,6 +66,7 @@ class BotConfig:
     multiply_points: tuple[PointMultiplier, ...] = ()
     coinflip: CoinflipConfig = field(default_factory=CoinflipConfig)
     predictions: PredictionsConfig = field(default_factory=PredictionsConfig)
+    competition: CompetitionConfig = field(default_factory=CompetitionConfig)
 
 
 def load_config(path: str = "config.yaml") -> BotConfig:
@@ -87,12 +101,19 @@ def load_config(path: str = "config.yaml") -> BotConfig:
         raise ValueError("config.yaml 'predictions.seed_liquidity' must be > 0")
     predictions = PredictionsConfig(seed_liquidity=seed_liquidity)
 
+    competition_data = data.get("competition", {})
+    mode = str(competition_data.get("mode", "dedicated"))
+    if mode not in ("dedicated", "basic"):
+        raise ValueError("config.yaml 'competition.mode' must be 'dedicated' or 'basic'")
+    competition = CompetitionConfig(mode=mode)
+
     roles_data = data["roles"]
     roles = RoleConfig(
         notification=roles_data["notification"],
         dry_run_admin=roles_data["dry_run_admin"],
         point_awarder=roles_data.get("point_awarder", 0),
         predict_starter=roles_data.get("predict_starter", 0),
+        reaction_role_admin=roles_data.get("reaction_role_admin", 0),
     )
 
     return BotConfig(
@@ -102,4 +123,5 @@ def load_config(path: str = "config.yaml") -> BotConfig:
         multiply_points=multiply_points,
         coinflip=coinflip,
         predictions=predictions,
+        competition=competition,
     )

@@ -681,3 +681,119 @@ async def save_bet_results(
                 "UPDATE prediction_bets SET points_change = %s WHERE id = %s",
                 (r["points_change"], r["bet_id"]),
             )
+
+
+# ---------------------------------------------------------------------------
+# Reaction roles
+# ---------------------------------------------------------------------------
+
+async def upsert_reaction_role(
+    pool: psycopg_pool.AsyncConnectionPool,
+    role_id: int,
+    emoji_key: str,
+    emoji_str: str,
+) -> None:
+    """
+    Add a role<->emoji pair, or update the emoji if the role is already configured.
+    Raises ValueError if emoji_key is already mapped to a different role.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT role_id FROM reaction_roles WHERE emoji_key = %s",
+                (emoji_key,),
+            )
+            existing = await cur.fetchone()
+            if existing is not None and existing["role_id"] != role_id:
+                raise ValueError("emoji_already_mapped")
+
+            await cur.execute(
+                """
+                INSERT INTO reaction_roles (role_id, emoji_key, emoji_str)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (role_id) DO UPDATE
+                    SET emoji_key = EXCLUDED.emoji_key,
+                        emoji_str = EXCLUDED.emoji_str
+                """,
+                (role_id, emoji_key, emoji_str),
+            )
+
+
+async def remove_reaction_role(
+    pool: psycopg_pool.AsyncConnectionPool,
+    role_id: int,
+) -> bool:
+    """Delete a reaction role pairing. Returns True if a row was removed."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM reaction_roles WHERE role_id = %s RETURNING id",
+                (role_id,),
+            )
+            row = await cur.fetchone()
+    return row is not None
+
+
+async def get_reaction_roles(
+    pool: psycopg_pool.AsyncConnectionPool,
+) -> list[dict[str, Any]]:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT role_id, emoji_key, emoji_str FROM reaction_roles ORDER BY created_at ASC"
+            )
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_reaction_role_by_emoji_key(
+    pool: psycopg_pool.AsyncConnectionPool,
+    emoji_key: str,
+) -> dict[str, Any] | None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT role_id, emoji_key, emoji_str FROM reaction_roles WHERE emoji_key = %s",
+                (emoji_key,),
+            )
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Bot settings (generic key/value store)
+# ---------------------------------------------------------------------------
+
+async def get_setting(
+    pool: psycopg_pool.AsyncConnectionPool,
+    key: str,
+) -> str | None:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT value FROM bot_settings WHERE key = %s", (key,))
+            row = await cur.fetchone()
+    return row["value"] if row else None
+
+
+async def set_setting(
+    pool: psycopg_pool.AsyncConnectionPool,
+    key: str,
+    value: str,
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO bot_settings (key, value)
+            VALUES (%s, %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """,
+            (key, value),
+        )
+
+
+async def delete_setting(
+    pool: psycopg_pool.AsyncConnectionPool,
+    key: str,
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM bot_settings WHERE key = %s", (key,))

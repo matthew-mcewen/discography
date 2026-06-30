@@ -74,6 +74,20 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
                 inline=False,
             )
 
+        if (
+            self.config.roles.reaction_role_admin
+            and self.config.roles.reaction_role_admin in user_role_ids
+        ):
+            embed.add_field(
+                name="Reaction Roles Admin",
+                value=(
+                    "`/reactionrole-add [role] [emoji]` — Add or update a reaction role\n"
+                    "`/reactionrole-remove [role]` — Remove a reaction role\n"
+                    "`/reactionrole-list` — List configured reaction roles"
+                ),
+                inline=False,
+            )
+
         if self.config.roles.dry_run_admin and self.config.roles.dry_run_admin in user_role_ids:
             embed.add_field(
                 name="Admin",
