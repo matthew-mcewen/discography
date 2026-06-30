@@ -1,0 +1,14 @@
+[Unit]
+Description=Discography Discord Bot
+After=network.target
+
+[Service]
+WorkingDirectory=%h/discography
+ExecStart=%h/discography/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

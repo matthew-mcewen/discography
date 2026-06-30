@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -16,6 +16,8 @@ class ChannelConfig:
 class RoleConfig:
     notification: int
     dry_run_admin: int
+    point_awarder: int = 0
+    predict_starter: int = 0
 
 
 @dataclass(frozen=True)
@@ -31,11 +33,26 @@ class PointMultiplier:
 
 
 @dataclass(frozen=True)
+class CoinflipConfig:
+    max_daily_flips: int = 5
+
+
+@dataclass(frozen=True)
+class PredictionsConfig:
+    # Virtual liquidity seeded on each outcome when computing dynamic odds.
+    # Higher values make odds move more slowly as bets come in; with empty
+    # pools both sides start at decimal odds of 2.0. Must be > 0.
+    seed_liquidity: float = 100.0
+
+
+@dataclass(frozen=True)
 class BotConfig:
     channels: ChannelConfig
     roles: RoleConfig
     points: PointsConfig
     multiply_points: tuple[PointMultiplier, ...] = ()
+    coinflip: CoinflipConfig = field(default_factory=CoinflipConfig)
+    predictions: PredictionsConfig = field(default_factory=PredictionsConfig)
 
 
 def load_config(path: str = "config.yaml") -> BotConfig:
@@ -59,9 +76,30 @@ def load_config(path: str = "config.yaml") -> BotConfig:
         for m in data.get("multiplyPoints", [])
     )
 
+    coinflip_data = data.get("coinflip", {})
+    coinflip = CoinflipConfig(
+        max_daily_flips=int(coinflip_data.get("max_daily_flips", 5)),
+    )
+
+    predictions_data = data.get("predictions", {})
+    seed_liquidity = float(predictions_data.get("seed_liquidity", 100.0))
+    if seed_liquidity <= 0:
+        raise ValueError("config.yaml 'predictions.seed_liquidity' must be > 0")
+    predictions = PredictionsConfig(seed_liquidity=seed_liquidity)
+
+    roles_data = data["roles"]
+    roles = RoleConfig(
+        notification=roles_data["notification"],
+        dry_run_admin=roles_data["dry_run_admin"],
+        point_awarder=roles_data.get("point_awarder", 0),
+        predict_starter=roles_data.get("predict_starter", 0),
+    )
+
     return BotConfig(
         channels=ChannelConfig(**data["channels"]),
-        roles=RoleConfig(**data["roles"]),
+        roles=roles,
         points=PointsConfig(**data["points"]),
         multiply_points=multiply_points,
+        coinflip=coinflip,
+        predictions=predictions,
     )

@@ -58,3 +58,44 @@ CREATE TABLE IF NOT EXISTS period_results (
 
 CREATE INDEX IF NOT EXISTS idx_period_results_period
     ON period_results (period_id);
+
+CREATE TABLE IF NOT EXISTS coinflip_log (
+    id         SERIAL      PRIMARY KEY,
+    user_id    BIGINT      NOT NULL,
+    amount     INTEGER     NOT NULL,
+    won        BOOLEAN     NOT NULL,
+    flipped_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_coinflip_log_user_date
+    ON coinflip_log (user_id, flipped_at);
+
+CREATE TABLE IF NOT EXISTS predictions (
+    id               SERIAL      PRIMARY KEY,
+    creator_id       BIGINT      NOT NULL,
+    outcome1         TEXT        NOT NULL,
+    outcome2         TEXT        NOT NULL,
+    message          TEXT        NOT NULL,
+    status           TEXT        NOT NULL DEFAULT 'open',
+    winning_outcome  TEXT        NULL,
+    channel_id       BIGINT      NOT NULL,
+    embed_message_id BIGINT      NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS prediction_bets (
+    id            SERIAL           PRIMARY KEY,
+    prediction_id INTEGER          NOT NULL REFERENCES predictions(id),
+    user_id       BIGINT           NOT NULL,
+    outcome       TEXT             NOT NULL,
+    amount        INTEGER          NOT NULL,
+    -- Decimal odds locked in at the moment the bet was placed, based on the
+    -- pool distribution at that time. Payout on a win = round(amount * odds).
+    odds          DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    points_change INTEGER          NULL,
+    placed_at     TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    UNIQUE (prediction_id, user_id)
+);
+
+-- Backfill for databases created before the odds column existed.
+ALTER TABLE prediction_bets ADD COLUMN IF NOT EXISTS odds DOUBLE PRECISION NOT NULL DEFAULT 1.0;

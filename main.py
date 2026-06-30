@@ -25,6 +25,7 @@ COGS = [
     "cogs.competition",
     "cogs.commands",
     "cogs.admin",
+    "cogs.predictions",
 ]
 
 

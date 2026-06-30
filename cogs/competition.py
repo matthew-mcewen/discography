@@ -104,14 +104,18 @@ class CompetitionCog(commands.Cog):
     # Scheduled task: announce winners on Monday 07:00 UTC
     # ------------------------------------------------------------------
 
-    async def announce_winners_task(self, dry_run: bool = False) -> dict[str, Any]:
+    async def announce_winners_task(self, dry_run: bool = False, force: bool = False) -> dict[str, Any]:
         """
         Announce the top 3 winners, award points to all submitters, and open the next period.
+        When force=True, operates on the current active period even if it hasn't ended yet.
         Returns a dict with the announcement text and award breakdown.
         """
-        period = await db.get_ended_unannounced_period(self._pool)
+        if force:
+            period = await db.get_any_unannounced_period(self._pool)
+        else:
+            period = await db.get_ended_unannounced_period(self._pool)
         if period is None:
-            logger.info("announce_winners_task: no ended unannounced period found, nothing to do.")
+            logger.info("announce_winners_task: no unannounced period found, nothing to do.")
             return {"announcement": None, "awards": []}
 
         # Final reaction count before announcement
@@ -154,15 +158,29 @@ class CompetitionCog(commands.Cog):
 
         announcement_text = "\n".join(lines)
 
-        # Build submission embeds: highest-voted submission per user, up to 3
+        # Build submission embeds: highest-voted submission per user, up to 3.
+        # Fetch messages live so we get a fresh (non-expired) CDN URL for the image.
         top_submissions = await db.get_top_submission_per_user(self._pool, period["id"], limit=3)
+        submissions_ch = self.bot.get_channel(self.config.channels.submissions)
         submission_embeds: list[discord.Embed] = []
         for rank, sub in enumerate(top_submissions, start=1):
             medal = RANK_MEDALS.get(rank, f"{rank}.")
+            image_url = sub["image_url"]
+
+            if submissions_ch is not None:
+                try:
+                    live_msg = await submissions_ch.fetch_message(sub["embed_message_id"])
+                    if live_msg.attachments:
+                        image_url = live_msg.attachments[0].url
+                    elif live_msg.embeds and live_msg.embeds[0].image:
+                        image_url = live_msg.embeds[0].image.proxy_url or image_url
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+
             embed = discord.Embed(
                 description=f"{medal} <@{sub['user_id']}> — {sub['net_trophy_count']} {TROPHY}",
             )
-            embed.set_image(url=sub["image_url"])
+            embed.set_image(url=image_url)
             submission_embeds.append(embed)
 
         # Build full awards list: rank prizes + net trophy points for every submitter

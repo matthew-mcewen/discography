@@ -132,6 +132,25 @@ async def get_ended_unannounced_period(
     return dict(row) if row else None
 
 
+async def get_any_unannounced_period(
+    pool: psycopg_pool.AsyncConnectionPool,
+) -> dict[str, Any] | None:
+    """Return the most recent unannounced period regardless of whether it has ended."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, start_time, end_time, winners_announced, leaderboard_message_id
+                FROM submission_periods
+                WHERE winners_announced = FALSE
+                ORDER BY start_time DESC
+                LIMIT 1
+                """
+            )
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
 # ---------------------------------------------------------------------------
 # Users
 # ---------------------------------------------------------------------------
@@ -168,6 +187,26 @@ async def get_user_points(
             )
             row = await cur.fetchone()
     return row["points"] if row else None
+
+
+async def upsert_users_bulk(
+    pool: psycopg_pool.AsyncConnectionPool,
+    users: list[tuple[int, str, str]],
+) -> None:
+    """users = [(user_id, username, display_name), ...]"""
+    async with pool.connection() as conn:
+        for user_id, username, display_name in users:
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, username, display_name)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE
+                    SET username     = EXCLUDED.username,
+                        display_name = EXCLUDED.display_name,
+                        updated_at   = now()
+                """,
+                (user_id, username, display_name),
+            )
 
 
 async def award_points_bulk(
@@ -283,43 +322,36 @@ async def get_period_leaderboard(
     limit: int | None = 10,
 ) -> list[dict[str, Any]]:
     """
-    Returns one row per user with their aggregated net trophy count across all submissions.
-    net_trophy_count = SUM(max(trophy_count - 1, 0)) — excludes the bot's own reaction per submission.
-    Ranked by net_trophy_count DESC, then earliest first submission as tiebreaker.
+    Returns one row per user ranked by their single highest-voted submission.
+    net_trophy_count = max(trophy_count - 1, 0) for the best submission.
+    Tiebreaker: earliest submission of the best submission.
+    Also returns best_embed_id for linking to the submission.
     """
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
+            sql = """
+                WITH best_per_user AS (
+                    SELECT DISTINCT ON (s.user_id)
+                        s.user_id,
+                        u.display_name,
+                        GREATEST(s.trophy_count - 1, 0) AS net_trophy_count,
+                        s.embed_message_id AS best_embed_id,
+                        s.submitted_at
+                    FROM submissions s
+                    JOIN users u ON u.user_id = s.user_id
+                    WHERE s.period_id = %s AND s.is_deleted = FALSE
+                    ORDER BY s.user_id,
+                             GREATEST(s.trophy_count - 1, 0) DESC,
+                             s.submitted_at ASC
+                )
+                SELECT user_id, display_name, net_trophy_count, best_embed_id, submitted_at
+                FROM best_per_user
+                ORDER BY net_trophy_count DESC, submitted_at ASC
+            """
             if limit is None:
-                await cur.execute(
-                    """
-                    SELECT u.user_id, u.display_name,
-                           SUM(GREATEST(s.trophy_count - 1, 0)) AS net_trophy_count,
-                           COUNT(s.id) AS submission_count,
-                           MIN(s.submitted_at) AS first_submitted_at
-                    FROM submissions s
-                    JOIN users u ON u.user_id = s.user_id
-                    WHERE s.period_id = %s AND s.is_deleted = FALSE
-                    GROUP BY u.user_id, u.display_name
-                    ORDER BY net_trophy_count DESC, first_submitted_at ASC
-                    """,
-                    (period_id,),
-                )
+                await cur.execute(sql, (period_id,))
             else:
-                await cur.execute(
-                    """
-                    SELECT u.user_id, u.display_name,
-                           SUM(GREATEST(s.trophy_count - 1, 0)) AS net_trophy_count,
-                           COUNT(s.id) AS submission_count,
-                           MIN(s.submitted_at) AS first_submitted_at
-                    FROM submissions s
-                    JOIN users u ON u.user_id = s.user_id
-                    WHERE s.period_id = %s AND s.is_deleted = FALSE
-                    GROUP BY u.user_id, u.display_name
-                    ORDER BY net_trophy_count DESC, first_submitted_at ASC
-                    LIMIT %s
-                    """,
-                    (period_id, limit),
-                )
+                await cur.execute(sql + " LIMIT %s", (period_id, limit))
             rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
@@ -343,7 +375,8 @@ async def get_top_submission_per_user(
                         s.user_id,
                         u.display_name,
                         GREATEST(s.trophy_count - 1, 0) AS net_trophy_count,
-                        s.image_url
+                        s.image_url,
+                        s.embed_message_id
                     FROM submissions s
                     JOIN users u ON u.user_id = s.user_id
                     WHERE s.period_id = %s AND s.is_deleted = FALSE
@@ -414,3 +447,237 @@ async def get_leaderboard_message_id(
             )
             row = await cur.fetchone()
     return row["leaderboard_message_id"] if row else None
+
+
+# ---------------------------------------------------------------------------
+# Coinflip
+# ---------------------------------------------------------------------------
+
+async def get_daily_flip_count(
+    pool: psycopg_pool.AsyncConnectionPool,
+    user_id: int,
+) -> int:
+    """Count flips made by user today (UTC date)."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM coinflip_log
+                WHERE user_id = %s
+                  AND (flipped_at AT TIME ZONE 'UTC')::date = (NOW() AT TIME ZONE 'UTC')::date
+                """,
+                (user_id,),
+            )
+            row = await cur.fetchone()
+    return row["cnt"] if row else 0
+
+
+async def record_coinflip(
+    pool: psycopg_pool.AsyncConnectionPool,
+    user_id: int,
+    amount: int,
+    won: bool,
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO coinflip_log (user_id, amount, won) VALUES (%s, %s, %s)",
+            (user_id, amount, won),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Predictions
+# ---------------------------------------------------------------------------
+
+async def create_prediction(
+    pool: psycopg_pool.AsyncConnectionPool,
+    creator_id: int,
+    outcome1: str,
+    outcome2: str,
+    message: str,
+    channel_id: int,
+) -> int:
+    """Insert a new open prediction and return its id."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO predictions (creator_id, outcome1, outcome2, message, channel_id)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (creator_id, outcome1, outcome2, message, channel_id),
+            )
+            row = await cur.fetchone()
+    return row["id"]
+
+
+def decimal_odds(outcome_pool: float, other_pool: float, seed: float) -> float:
+    """
+    Dynamic decimal (European) odds for an outcome given the current staked
+    pools, smoothed by ``seed`` virtual liquidity on each side.
+
+        odds = (outcome_pool + other_pool + 2*seed) / (outcome_pool + seed)
+
+    With empty pools both sides start at 2.0. As money piles onto an outcome
+    its odds fall (toward 1.0) while the opposing outcome's odds rise. A win
+    pays ``round(stake * odds)``, i.e. stake returned plus ``odds - 1`` profit.
+    """
+    return (outcome_pool + other_pool + 2 * seed) / (outcome_pool + seed)
+
+
+async def get_prediction_pools(
+    pool: psycopg_pool.AsyncConnectionPool,
+    prediction_id: int,
+) -> dict[str, int]:
+    """Total amount staked per outcome for a prediction: {outcome: total_amount}."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT outcome, COALESCE(SUM(amount), 0) AS total
+                FROM prediction_bets
+                WHERE prediction_id = %s
+                GROUP BY outcome
+                """,
+                (prediction_id,),
+            )
+            rows = await cur.fetchall()
+    return {r["outcome"]: int(r["total"]) for r in rows}
+
+
+async def get_open_prediction(
+    pool: psycopg_pool.AsyncConnectionPool,
+) -> dict[str, Any] | None:
+    """Return the single open (status='open') prediction, or None."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, creator_id, outcome1, outcome2, message, channel_id, embed_message_id
+                FROM predictions
+                WHERE status = 'open'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def set_prediction_embed_message(
+    pool: psycopg_pool.AsyncConnectionPool,
+    prediction_id: int,
+    message_id: int,
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE predictions SET embed_message_id = %s WHERE id = %s",
+            (message_id, prediction_id),
+        )
+
+
+async def place_bet_and_deduct(
+    pool: psycopg_pool.AsyncConnectionPool,
+    prediction_id: int,
+    user_id: int,
+    outcome: str,
+    other_outcome: str,
+    amount: int,
+    seed: float,
+) -> float | None:
+    """
+    Deduct points and record a bet atomically, locking in the dynamic odds for
+    ``outcome`` based on the pool distribution *before* this bet is added.
+
+    Returns the locked decimal odds, or ``None`` if the user has already bet on
+    this prediction.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT 1 FROM prediction_bets WHERE prediction_id = %s AND user_id = %s",
+                (prediction_id, user_id),
+            )
+            if await cur.fetchone():
+                return None
+
+            # Pre-bet pools, read inside the transaction so the locked odds
+            # reflect a consistent snapshot.
+            await cur.execute(
+                """
+                SELECT outcome, COALESCE(SUM(amount), 0) AS total
+                FROM prediction_bets
+                WHERE prediction_id = %s
+                GROUP BY outcome
+                """,
+                (prediction_id,),
+            )
+            pools = {r["outcome"]: int(r["total"]) for r in await cur.fetchall()}
+
+        outcome_pool = pools.get(outcome, 0)
+        other_pool = pools.get(other_outcome, 0)
+        odds = decimal_odds(outcome_pool, other_pool, seed)
+
+        await conn.execute(
+            "UPDATE users SET points = points - %s, updated_at = now() WHERE user_id = %s",
+            (amount, user_id),
+        )
+        await conn.execute(
+            """
+            INSERT INTO prediction_bets (prediction_id, user_id, outcome, amount, odds)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (prediction_id, user_id, outcome, amount, odds),
+        )
+    return odds
+
+
+async def get_bets_for_prediction(
+    pool: psycopg_pool.AsyncConnectionPool,
+    prediction_id: int,
+) -> list[dict[str, Any]]:
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT b.id, b.user_id, b.outcome, b.amount, b.odds, u.display_name
+                FROM prediction_bets b
+                JOIN users u ON u.user_id = b.user_id
+                WHERE b.prediction_id = %s
+                ORDER BY b.placed_at ASC
+                """,
+                (prediction_id,),
+            )
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def close_prediction(
+    pool: psycopg_pool.AsyncConnectionPool,
+    prediction_id: int,
+    winning_outcome: str,
+) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            UPDATE predictions
+            SET status = 'closed', winning_outcome = %s
+            WHERE id = %s
+            """,
+            (winning_outcome, prediction_id),
+        )
+
+
+async def save_bet_results(
+    pool: psycopg_pool.AsyncConnectionPool,
+    results: list[dict[str, Any]],
+) -> None:
+    """results = [{"bet_id": int, "points_change": int}, ...]"""
+    async with pool.connection() as conn:
+        for r in results:
+            await conn.execute(
+                "UPDATE prediction_bets SET points_change = %s WHERE id = %s",
+                (r["points_change"], r["bet_id"]),
+            )

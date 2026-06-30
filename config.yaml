@@ -7,10 +7,21 @@ channels:
 roles:
   notification: 1520821170797150269       # Role ID pinged on winner announcements
   dry_run_admin: 1520821170797150269      # Role ID allowed to use /dryrun-* commands
+  point_awarder: 1520821170797150269                        # Role ID allowed to use /awardpoints (0 = disabled)
+  predict_starter: 1520821170797150269                      # Role ID allowed to use /createpredict and /finishpredict (0 = disabled)
 
 points:
-  name: "BasicPoints"
+  name: "BasicMiles"
   emoji: "🏆"           # Unicode emoji or Discord custom emote string e.g. <:star:123456789>
+
+coinflip:
+  max_daily_flips: 3                     # Maximum coin flips per user per day (UTC)
+
+predictions:
+  # Virtual liquidity seeded on each outcome for dynamic odds. With no bets
+  # placed yet, both outcomes start at decimal odds of 2.0. Larger values make
+  # the odds drift more slowly as wagers come in. Must be > 0.
+  seed_liquidity: 100
 
 # Optional: award a points multiplier to users with specific roles.
 # If a user has multiple matching roles, the highest multiplier wins.
