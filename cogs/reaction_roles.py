@@ -8,7 +8,8 @@ from discord import app_commands
 from discord.ext import commands
 
 import db.database as db
-from utils.config import BotConfig
+from cogs.checks import FeatureDisabled, get_config, require_role
+from utils.config import GuildConfig
 
 if TYPE_CHECKING:
     from main import DiscographyBot
@@ -24,9 +25,8 @@ def _emoji_key(emoji: discord.PartialEmoji) -> str:
 
 
 class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
-    def __init__(self, bot: DiscographyBot, config: BotConfig) -> None:
+    def __init__(self, bot: DiscographyBot) -> None:
         self.bot = bot
-        self.config = config
         self._synced_on_ready = False
 
     @property
@@ -45,12 +45,16 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
         role="The role to grant",
         emoji="The emoji users react with (unicode emoji or a custom server emote)",
     )
+    @require_role("reaction_role_admin")
     async def reactionrole_add(
         self,
         interaction: discord.Interaction,
         role: discord.Role,
         emoji: str,
     ) -> None:
+        config = await get_config(interaction)
+        guild_id = interaction.guild_id
+
         try:
             partial_emoji = discord.PartialEmoji.from_str(emoji.strip())
         except Exception:
@@ -79,7 +83,7 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
         emoji_str = str(partial_emoji)
 
         try:
-            await db.upsert_reaction_role(self._pool, role.id, emoji_key, emoji_str)
+            await db.upsert_reaction_role(self._pool, guild_id, role.id, emoji_key, emoji_str)
         except ValueError:
             await interaction.response.send_message(
                 f"{emoji_str} is already assigned to a different role. Remove that pairing first.",
@@ -87,51 +91,41 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
             )
             return
 
-        await interaction.response.send_message(
-            f"✅ {emoji_str} now grants {role.mention}.", ephemeral=True
-        )
-        await self.sync_panel()
+        await interaction.response.send_message(f"✅ {emoji_str} now grants {role.mention}.", ephemeral=True)
+        await self.sync_panel(guild_id, config)
 
     # ------------------------------------------------------------------
     # /reactionrole-remove
     # ------------------------------------------------------------------
 
-    @app_commands.command(
-        name="reactionrole-remove",
-        description="[Admin] Remove a reaction role pairing.",
-    )
+    @app_commands.command(name="reactionrole-remove", description="[Admin] Remove a reaction role pairing.")
     @app_commands.describe(role="The role to stop granting via reactions")
-    async def reactionrole_remove(
-        self,
-        interaction: discord.Interaction,
-        role: discord.Role,
-    ) -> None:
-        removed = await db.remove_reaction_role(self._pool, role.id)
+    @require_role("reaction_role_admin")
+    async def reactionrole_remove(self, interaction: discord.Interaction, role: discord.Role) -> None:
+        config = await get_config(interaction)
+        guild_id = interaction.guild_id
+
+        removed = await db.remove_reaction_role(self._pool, guild_id, role.id)
         if not removed:
             await interaction.response.send_message(
                 f"{role.mention} isn't set up as a reaction role.", ephemeral=True
             )
             return
 
-        await interaction.response.send_message(
-            f"✅ Removed reaction role for {role.mention}.", ephemeral=True
-        )
-        await self.sync_panel()
+        await interaction.response.send_message(f"✅ Removed reaction role for {role.mention}.", ephemeral=True)
+        await self.sync_panel(guild_id, config)
 
     # ------------------------------------------------------------------
     # /reactionrole-list
     # ------------------------------------------------------------------
 
-    @app_commands.command(
-        name="reactionrole-list",
-        description="[Admin] List all configured reaction roles.",
-    )
+    @app_commands.command(name="reactionrole-list", description="[Admin] List all configured reaction roles.")
+    @require_role("reaction_role_admin")
     async def reactionrole_list(self, interaction: discord.Interaction) -> None:
-        pairs = await db.get_reaction_roles(self._pool)
+        pairs = await db.get_reaction_roles(self._pool, interaction.guild_id)
         if not pairs:
             await interaction.response.send_message("No reaction roles configured.", ephemeral=True)
             return
-
         lines = [f"{p['emoji_str']} → <@&{p['role_id']}>" for p in pairs]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
@@ -139,20 +133,23 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
     # Panel embed — posted/edited/removed based on configured pairs
     # ------------------------------------------------------------------
 
-    async def sync_panel(self) -> None:
-        """Post, update, or remove the reaction-role panel embed based on configured pairs."""
-        channel_id = self.config.channels.reaction_roles
+    async def sync_panel(self, guild_id: int, config: GuildConfig | None) -> None:
+        if config is None:
+            config = await self.bot.get_guild_config(guild_id)
+        if config is None:
+            return
+        channel_id = config.channels.reaction_roles
         if not channel_id:
-            logger.warning("reaction_roles.sync_panel: no channels.reaction_roles configured.")
+            logger.warning("Guild %s: sync_panel called but no reaction_roles channel configured.", guild_id)
             return
 
         channel = self.bot.get_channel(channel_id)
         if channel is None:
-            logger.error("Reaction roles channel %s not found.", channel_id)
+            logger.error("Guild %s: reaction roles channel %s not found.", guild_id, channel_id)
             return
 
-        pairs = await db.get_reaction_roles(self._pool)
-        stored_id = await db.get_setting(self._pool, PANEL_MESSAGE_SETTING_KEY)
+        pairs = await db.get_reaction_roles(self._pool, guild_id)
+        stored_id = await db.get_setting(self._pool, guild_id, PANEL_MESSAGE_SETTING_KEY)
 
         if not pairs:
             if stored_id is not None:
@@ -161,7 +158,7 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
                     await msg.delete()
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     pass
-                await db.delete_setting(self._pool, PANEL_MESSAGE_SETTING_KEY)
+                await db.delete_setting(self._pool, guild_id, PANEL_MESSAGE_SETTING_KEY)
             return
 
         embed = self._build_panel_embed(pairs)
@@ -174,16 +171,16 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
             except discord.NotFound:
                 msg = None
             except discord.HTTPException as exc:
-                logger.error("Failed to edit reaction role panel: %s", exc)
+                logger.error("Guild %s: failed to edit reaction role panel: %s", guild_id, exc)
                 return
 
         if msg is None:
             try:
                 msg = await channel.send(embed=embed)
             except discord.Forbidden:
-                logger.error("Missing permissions to post in reaction roles channel %s.", channel_id)
+                logger.error("Guild %s: missing permissions to post in reaction roles channel.", guild_id)
                 return
-            await db.set_setting(self._pool, PANEL_MESSAGE_SETTING_KEY, str(msg.id))
+            await db.set_setting(self._pool, guild_id, PANEL_MESSAGE_SETTING_KEY, str(msg.id))
 
         await self._sync_panel_reactions(msg, pairs)
 
@@ -210,7 +207,6 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
             partial = emoji if isinstance(emoji, discord.PartialEmoji) else discord.PartialEmoji.from_str(str(emoji))
             existing[_emoji_key(partial)] = reaction
 
-        # Remove reactions that are no longer configured
         for key, reaction in existing.items():
             if key not in wanted_keys:
                 try:
@@ -218,7 +214,6 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
                 except (discord.Forbidden, discord.HTTPException):
                     pass
 
-        # Add reactions for newly configured pairs
         for p in pairs:
             if p["emoji_key"] not in existing:
                 try:
@@ -227,7 +222,7 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
                     pass
 
     # ------------------------------------------------------------------
-    # Recreate the panel on startup if it's missing (e.g. deleted manually)
+    # Recreate panels on startup for every serviceable guild
     # ------------------------------------------------------------------
 
     @commands.Cog.listener()
@@ -235,28 +230,37 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
         if self._synced_on_ready:
             return
         self._synced_on_ready = True
-        await self.sync_panel()
+        for guild in self.bot.guilds:
+            config = await self.bot.get_guild_config(guild.id)
+            if config is not None and config.channels.reaction_roles:
+                try:
+                    await self.sync_panel(guild.id, config)
+                except Exception:
+                    logger.exception("Guild %s: failed to sync reaction role panel on ready.", guild.id)
 
     # ------------------------------------------------------------------
     # Raw reaction listeners — assign/remove role on react/unreact
     # ------------------------------------------------------------------
 
-    async def _panel_message_id(self) -> int | None:
-        stored_id = await db.get_setting(self._pool, PANEL_MESSAGE_SETTING_KEY)
+    async def _panel_message_id(self, guild_id: int) -> int | None:
+        stored_id = await db.get_setting(self._pool, guild_id, PANEL_MESSAGE_SETTING_KEY)
         return int(stored_id) if stored_id is not None else None
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        if payload.user_id == self.bot.user.id:
+        if payload.guild_id is None or payload.user_id == self.bot.user.id:
             return
-        if payload.channel_id != self.config.channels.reaction_roles:
+        config = await self.bot.get_guild_config(payload.guild_id)
+        if config is None or not config.channels.reaction_roles:
+            return
+        if payload.channel_id != config.channels.reaction_roles:
             return
 
-        panel_id = await self._panel_message_id()
+        panel_id = await self._panel_message_id(payload.guild_id)
         if panel_id is None or payload.message_id != panel_id:
             return
 
-        pair = await db.get_reaction_role_by_emoji_key(self._pool, _emoji_key(payload.emoji))
+        pair = await db.get_reaction_role_by_emoji_key(self._pool, payload.guild_id, _emoji_key(payload.emoji))
         if pair is None:
             return
 
@@ -273,20 +277,23 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
         try:
             await member.add_roles(role, reason="Reaction role")
         except (discord.Forbidden, discord.HTTPException):
-            logger.warning("Failed to add role %s to member %s", role.id, member.id)
+            logger.warning("Guild %s: failed to add role %s to member %s", payload.guild_id, role.id, member.id)
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
-        if payload.user_id == self.bot.user.id:
+        if payload.guild_id is None or payload.user_id == self.bot.user.id:
             return
-        if payload.channel_id != self.config.channels.reaction_roles:
+        config = await self.bot.get_guild_config(payload.guild_id)
+        if config is None or not config.channels.reaction_roles:
+            return
+        if payload.channel_id != config.channels.reaction_roles:
             return
 
-        panel_id = await self._panel_message_id()
+        panel_id = await self._panel_message_id(payload.guild_id)
         if panel_id is None or payload.message_id != panel_id:
             return
 
-        pair = await db.get_reaction_role_by_emoji_key(self._pool, _emoji_key(payload.emoji))
+        pair = await db.get_reaction_role_by_emoji_key(self._pool, payload.guild_id, _emoji_key(payload.emoji))
         if pair is None:
             return
 
@@ -306,7 +313,7 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
         try:
             await member.remove_roles(role, reason="Reaction role removed")
         except (discord.Forbidden, discord.HTTPException):
-            logger.warning("Failed to remove role %s from member %s", role.id, member.id)
+            logger.warning("Guild %s: failed to remove role %s from member %s", payload.guild_id, role.id, member.id)
 
     # ------------------------------------------------------------------
     # Error handler
@@ -317,39 +324,21 @@ class ReactionRolesCog(commands.Cog, name="ReactionRolesCog"):
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
-        if isinstance(error, app_commands.MissingRole):
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "You don't have permission to use this command.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(
-                    "You don't have permission to use this command.",
-                    ephemeral=True,
-                )
+        if isinstance(error, FeatureDisabled):
+            await self._respond(interaction, "Reaction roles aren't enabled for this server.")
+        elif isinstance(error, (app_commands.MissingRole, app_commands.CheckFailure)):
+            await self._respond(interaction, "You don't have permission to use this command.")
         else:
             logger.exception("Unhandled reaction roles command error: %s", error)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "An error occurred. Check the bot logs.",
-                    ephemeral=True,
-                )
+            await self._respond(interaction, "An error occurred. Check the bot logs.")
+
+    @staticmethod
+    async def _respond(interaction: discord.Interaction, message: str) -> None:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
 
 async def setup(bot: DiscographyBot) -> None:
-    cog = ReactionRolesCog(bot, bot.config)
-
-    admin_role_id = bot.config.roles.reaction_role_admin
-
-    async def reaction_role_admin_check(interaction: discord.Interaction) -> bool:
-        if any(r.id == admin_role_id for r in interaction.user.roles):
-            return True
-        raise app_commands.MissingRole(admin_role_id)
-
-    restricted_commands = {"reactionrole-add", "reactionrole-remove", "reactionrole-list"}
-    for cmd in cog.__cog_app_commands__:
-        if cmd.name in restricted_commands:
-            cmd.add_check(reaction_role_admin_check)
-
-    await bot.add_cog(cog)
+    await bot.add_cog(ReactionRolesCog(bot))

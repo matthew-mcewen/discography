@@ -8,7 +8,7 @@ import discord
 from discord.ext import commands
 
 import db.database as db
-from utils.config import BotConfig
+from utils.config import GuildConfig
 
 if TYPE_CHECKING:
     from main import DiscographyBot
@@ -31,7 +31,6 @@ def _collect_images(message: discord.Message) -> list[ImageSource]:
             images.append(attachment)
 
     for embed in message.embeds:
-        # Only count embeds that ARE the image, not link-preview thumbnails
         if embed.type == "image" and embed.url:
             images.append(embed.url)
 
@@ -39,9 +38,8 @@ def _collect_images(message: discord.Message) -> list[ImageSource]:
 
 
 class SubmissionsCog(commands.Cog):
-    def __init__(self, bot: DiscographyBot, config: BotConfig) -> None:
+    def __init__(self, bot: DiscographyBot) -> None:
         self.bot = bot
-        self.config = config
 
     @property
     def _pool(self):
@@ -53,19 +51,21 @@ class SubmissionsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot:
+        if message.author.bot or message.guild is None:
             return
-        if message.channel.id != self.config.channels.submissions:
+        config = await self.bot.get_guild_config(message.guild.id)
+        if config is None or config.channels.submissions is None:
+            return
+        if message.channel.id != config.channels.submissions:
             return
 
+        guild_id = message.guild.id
         images = _collect_images(message)
 
-        if self.config.competition.mode == "basic":
-            # Basic mode treats the channel as shared/general-purpose: only
-            # react to clean single-image posts, leave everything else alone.
+        if config.competition.mode == "basic":
             if len(images) != 1:
                 return
-            await self._accept_basic(message, images[0])
+            await self._accept_basic(message, guild_id, config, images[0])
             return
 
         if len(images) == 0:
@@ -84,7 +84,7 @@ class SubmissionsCog(commands.Cog):
             )
             return
 
-        await self._accept(message, images[0])
+        await self._accept(message, guild_id, config, images[0])
 
     async def _reject(self, message: discord.Message, reason: str) -> None:
         try:
@@ -103,10 +103,17 @@ class SubmissionsCog(commands.Cog):
         except discord.Forbidden:
             logger.warning("Missing permissions to send rejection message in channel %s", message.channel.id)
 
-    async def _accept(self, message: discord.Message, image: ImageSource) -> None:
-        period = await db.ensure_active_period(self._pool)
+    async def _accept(
+        self,
+        message: discord.Message,
+        guild_id: int,
+        config: GuildConfig,
+        image: ImageSource,
+    ) -> None:
+        period = await db.ensure_active_period(self._pool, guild_id, config.tzinfo())
         await db.upsert_user(
             self._pool,
+            guild_id,
             message.author.id,
             str(message.author),
             message.author.display_name,
@@ -153,7 +160,6 @@ class SubmissionsCog(commands.Cog):
             logger.error("Missing permissions to post submission embed in channel %s", message.channel.id)
             return
 
-        # Use the re-hosted attachment URL if available (survives as long as the embed message does)
         if embed_msg.attachments:
             image_url = embed_msg.attachments[0].url
 
@@ -165,6 +171,7 @@ class SubmissionsCog(commands.Cog):
         try:
             await db.create_submission(
                 self._pool,
+                guild_id,
                 period["id"],
                 message.author.id,
                 message.id,
@@ -174,15 +181,21 @@ class SubmissionsCog(commands.Cog):
         except Exception:
             logger.exception("Failed to save submission for embed message %s", embed_msg.id)
 
-    async def _accept_basic(self, message: discord.Message, image: ImageSource) -> None:
+    async def _accept_basic(
+        self,
+        message: discord.Message,
+        guild_id: int,
+        config: GuildConfig,
+        image: ImageSource,
+    ) -> None:
         """
         Basic mode: react directly to the original post instead of deleting and
-        reposting it. The original message doubles as the vote target, so it's
-        recorded as both original_message_id and embed_message_id.
+        reposting it. The original message doubles as the vote target.
         """
-        period = await db.ensure_active_period(self._pool)
+        period = await db.ensure_active_period(self._pool, guild_id, config.tzinfo())
         await db.upsert_user(
             self._pool,
+            guild_id,
             message.author.id,
             str(message.author),
             message.author.display_name,
@@ -199,6 +212,7 @@ class SubmissionsCog(commands.Cog):
         try:
             await db.create_submission(
                 self._pool,
+                guild_id,
                 period["id"],
                 message.author.id,
                 message.id,
@@ -214,17 +228,20 @@ class SubmissionsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        if payload.channel_id != self.config.channels.submissions:
-            return
-        if payload.user_id == self.bot.user.id:
+        if payload.guild_id is None or payload.user_id == self.bot.user.id:
             return
         if str(payload.emoji) == TROPHY:
             return
-        if self.config.competition.mode == "basic":
+        config = await self.bot.get_guild_config(payload.guild_id)
+        if config is None or config.channels.submissions is None:
+            return
+        if payload.channel_id != config.channels.submissions:
+            return
+        if config.competition.mode == "basic":
             # Basic mode doesn't enforce trophy-only reactions.
             return
 
-        known = await db.is_known_embed_message(self._pool, payload.message_id)
+        known = await db.is_known_embed_message(self._pool, payload.guild_id, payload.message_id)
         if not known:
             return
 
@@ -243,10 +260,15 @@ class SubmissionsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
-        if payload.channel_id != self.config.channels.submissions:
+        if payload.guild_id is None:
             return
-        await db.soft_delete_submission(self._pool, payload.message_id)
+        config = await self.bot.get_guild_config(payload.guild_id)
+        if config is None or config.channels.submissions is None:
+            return
+        if payload.channel_id != config.channels.submissions:
+            return
+        await db.soft_delete_submission(self._pool, payload.guild_id, payload.message_id)
 
 
 async def setup(bot: DiscographyBot) -> None:
-    await bot.add_cog(SubmissionsCog(bot, bot.config))
+    await bot.add_cog(SubmissionsCog(bot))

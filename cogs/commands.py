@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import db.database as db
-from utils.config import BotConfig
+from utils.config import GuildConfig
 
 if TYPE_CHECKING:
     from main import DiscographyBot
@@ -20,17 +20,19 @@ RANK_MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 
 class CommandsCog(commands.Cog, name="CommandsCog"):
-    def __init__(self, bot: DiscographyBot, config: BotConfig) -> None:
+    def __init__(self, bot: DiscographyBot) -> None:
         self.bot = bot
-        self.config = config
 
     @property
     def _pool(self):
         return self.bot.db_pool
 
-    # ------------------------------------------------------------------
-    # /points  (slash)  +  !points  (prefix)
-    # ------------------------------------------------------------------
+    async def _config(self, interaction: discord.Interaction) -> GuildConfig | None:
+        """Reuse the config the gate stashed, or fetch it (cache-cheap)."""
+        cfg = interaction.extras.get("config")
+        if cfg is not None:
+            return cfg
+        return await self.bot.get_guild_config(interaction.guild_id)
 
     # ------------------------------------------------------------------
     # /help
@@ -38,13 +40,12 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
 
     @app_commands.command(name="help", description="List all commands available to you.")
     async def slash_help(self, interaction: discord.Interaction) -> None:
+        config = await self._config(interaction)
+        if config is None:
+            return
         user_role_ids = {r.id for r in interaction.user.roles}
 
-        embed = discord.Embed(
-            title="Commands",
-            color=discord.Color.blurple(),
-        )
-
+        embed = discord.Embed(title="Commands", color=discord.Color.blurple())
         embed.add_field(
             name="General",
             value=(
@@ -57,7 +58,7 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
             inline=False,
         )
 
-        if self.config.roles.predict_starter and self.config.roles.predict_starter in user_role_ids:
+        if config.roles.predict_starter and config.roles.predict_starter in user_role_ids:
             embed.add_field(
                 name="Prediction Starter",
                 value=(
@@ -67,17 +68,14 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
                 inline=False,
             )
 
-        if self.config.roles.point_awarder and self.config.roles.point_awarder in user_role_ids:
+        if config.roles.point_awarder and config.roles.point_awarder in user_role_ids:
             embed.add_field(
                 name="Point Awarder",
                 value="`/awardpoints [user] [amount]` — Directly award points to a user",
                 inline=False,
             )
 
-        if (
-            self.config.roles.reaction_role_admin
-            and self.config.roles.reaction_role_admin in user_role_ids
-        ):
+        if config.roles.reaction_role_admin and config.roles.reaction_role_admin in user_role_ids:
             embed.add_field(
                 name="Reaction Roles Admin",
                 value=(
@@ -88,7 +86,7 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
                 inline=False,
             )
 
-        if self.config.roles.dry_run_admin and self.config.roles.dry_run_admin in user_role_ids:
+        if config.roles.dry_run_admin and config.roles.dry_run_admin in user_role_ids:
             embed.add_field(
                 name="Admin",
                 value=(
@@ -109,62 +107,57 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
 
     @app_commands.command(name="points", description="Check your current points balance.")
     async def slash_points(self, interaction: discord.Interaction) -> None:
-        pts = await db.get_user_points(self._pool, interaction.user.id)
+        config = await self._config(interaction)
+        if config is None:
+            return
+        pts = await db.get_user_points(self._pool, interaction.guild_id, interaction.user.id)
         if pts is None:
-            msg = (
-                f"You haven't made any submissions yet, so you have 0 "
-                f"{self.config.points.name}."
-            )
+            msg = f"You haven't made any submissions yet, so you have 0 {config.points.name}."
         else:
-            msg = (
-                f"You have **{pts}** {self.config.points.name} "
-                f"{self.config.points.emoji}."
-            )
+            msg = f"You have **{pts}** {config.points.name} {config.points.emoji}."
         await interaction.response.send_message(msg, ephemeral=True)
 
     @commands.command(name="points")
     async def prefix_points(self, ctx: commands.Context) -> None:
-        pts = await db.get_user_points(self._pool, ctx.author.id)
+        if ctx.guild is None:
+            return
+        config = await self.bot.get_guild_config(ctx.guild.id)
+        if config is None:
+            return
+        pts = await db.get_user_points(self._pool, ctx.guild.id, ctx.author.id)
         if pts is None:
-            msg = (
-                f"You haven't made any submissions yet, so you have 0 "
-                f"{self.config.points.name}."
-            )
+            msg = f"You haven't made any submissions yet, so you have 0 {config.points.name}."
         else:
-            msg = (
-                f"You have **{pts}** {self.config.points.name} "
-                f"{self.config.points.emoji}."
-            )
+            msg = f"You have **{pts}** {config.points.name} {config.points.emoji}."
         await ctx.reply(msg)
 
     # ------------------------------------------------------------------
-    # /leaderboard  — show current standings ephemerally
+    # /leaderboard
     # ------------------------------------------------------------------
 
     @app_commands.command(name="leaderboard", description="View the current weekly leaderboard.")
     async def slash_leaderboard(self, interaction: discord.Interaction) -> None:
-        embed = await self.update_leaderboard(dry_run=True)
+        embed = await self.update_leaderboard(interaction.guild_id, dry_run=True)
         if embed is None:
             await interaction.response.send_message("No submissions yet this week.", ephemeral=True)
             return
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------------
-    # Leaderboard maintenance — called by competition tasks
+    # Leaderboard maintenance — called by competition tasks (per guild)
     # ------------------------------------------------------------------
 
-    async def update_leaderboard(self, dry_run: bool = False) -> discord.Embed | None:
-        """
-        Build the leaderboard embed and edit the pinned message in-place.
-        Returns the embed (useful for dry-run preview or /leaderboard command).
-        """
-        period = await db.ensure_active_period(self._pool)
-        entries = await db.get_period_leaderboard(self._pool, period["id"], limit=10)
+    async def update_leaderboard(self, guild_id: int, dry_run: bool = False) -> discord.Embed | None:
+        config = await self.bot.get_guild_config(guild_id)
+        if config is None:
+            return None
 
-        # Build a base URL so entries can link to their best submission
-        guild = self.bot.guilds[0] if self.bot.guilds else None
-        if guild:
-            sub_url_base = f"https://discord.com/channels/{guild.id}/{self.config.channels.submissions}"
+        period = await db.ensure_active_period(self._pool, guild_id, config.tzinfo())
+        entries = await db.get_period_leaderboard(self._pool, guild_id, period["id"], limit=10)
+
+        guild = self.bot.get_guild(guild_id)
+        if guild and config.channels.submissions:
+            sub_url_base = f"https://discord.com/channels/{guild.id}/{config.channels.submissions}"
         else:
             sub_url_base = None
 
@@ -173,12 +166,14 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
         if dry_run:
             return embed
 
-        channel = self.bot.get_channel(self.config.channels.leaderboard)
+        if config.channels.leaderboard is None:
+            return embed
+        channel = self.bot.get_channel(config.channels.leaderboard)
         if channel is None:
-            logger.error("Leaderboard channel %s not found.", self.config.channels.leaderboard)
+            logger.error("Guild %s: leaderboard channel %s not found.", guild_id, config.channels.leaderboard)
             return embed
 
-        stored_id = await db.get_leaderboard_message_id(self._pool, period["id"])
+        stored_id = await db.get_leaderboard_message_id(self._pool, guild_id, period["id"])
 
         if stored_id is not None:
             try:
@@ -186,26 +181,25 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
                 await msg.edit(embed=embed)
                 return embed
             except discord.NotFound:
-                logger.warning("Leaderboard message %s was deleted; reposting.", stored_id)
+                logger.warning("Guild %s: leaderboard message %s deleted; reposting.", guild_id, stored_id)
             except discord.HTTPException as exc:
-                logger.error("Failed to edit leaderboard message: %s", exc)
+                logger.error("Guild %s: failed to edit leaderboard message: %s", guild_id, exc)
                 return embed
 
-        # Post a new leaderboard message
         try:
             msg = await channel.send(embed=embed)
             try:
                 await msg.pin()
             except discord.HTTPException as exc:
                 if exc.code == 30003:
-                    logger.warning("Pin limit reached in leaderboard channel; message not pinned.")
+                    logger.warning("Guild %s: pin limit reached in leaderboard channel.", guild_id)
                 else:
                     raise
-            await db.set_leaderboard_message_id(self._pool, period["id"], msg.id)
+            await db.set_leaderboard_message_id(self._pool, guild_id, period["id"], msg.id)
         except discord.Forbidden:
-            logger.error("Missing permissions to post/pin in leaderboard channel.")
+            logger.error("Guild %s: missing permissions to post/pin in leaderboard channel.", guild_id)
         except discord.HTTPException as exc:
-            logger.error("Failed to post leaderboard message: %s", exc)
+            logger.error("Guild %s: failed to post leaderboard message: %s", guild_id, exc)
 
         return embed
 
@@ -216,22 +210,26 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
     @app_commands.command(name="coinflip", description="Bet points on a coin flip.")
     @app_commands.describe(amount="Number of points to wager")
     async def slash_coinflip(self, interaction: discord.Interaction, amount: int) -> None:
+        config = await self._config(interaction)
+        if config is None:
+            return
+        guild_id = interaction.guild_id
         if amount < 1:
             await interaction.response.send_message("Amount must be at least 1.", ephemeral=True)
             return
 
-        balance = await db.get_user_points(self._pool, interaction.user.id)
+        balance = await db.get_user_points(self._pool, guild_id, interaction.user.id)
         if balance is None:
             balance = 0
         if balance < amount:
             await interaction.response.send_message(
-                f"You only have **{balance}** {self.config.points.name} — not enough to wager {amount}.",
+                f"You only have **{balance}** {config.points.name} — not enough to wager {amount}.",
                 ephemeral=True,
             )
             return
 
-        max_flips = self.config.coinflip.max_daily_flips
-        daily_count = await db.get_daily_flip_count(self._pool, interaction.user.id)
+        max_flips = config.coinflip.max_daily_flips
+        daily_count = await db.get_daily_flip_count(self._pool, guild_id, interaction.user.id)
         if daily_count >= max_flips:
             await interaction.response.send_message(
                 f"You've hit your daily limit of **{max_flips}** coin flip(s). Try again tomorrow!",
@@ -241,23 +239,23 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
 
         won = random.random() < 0.5
         delta = amount if won else -amount
-        await db.award_points_bulk(self._pool, [(interaction.user.id, delta)])
-        await db.record_coinflip(self._pool, interaction.user.id, amount, won)
-        new_balance = (balance or 0) + delta
+        await db.award_points_bulk(self._pool, guild_id, [(interaction.user.id, delta)])
+        await db.record_coinflip(self._pool, guild_id, interaction.user.id, amount, won)
+        new_balance = balance + delta
 
         if won:
             embed = discord.Embed(
                 title="🪙 Heads — You Win!",
-                description=f"You won **+{amount}** {self.config.points.name} {self.config.points.emoji}",
+                description=f"You won **+{amount}** {config.points.name} {config.points.emoji}",
                 color=discord.Color.green(),
             )
         else:
             embed = discord.Embed(
                 title="🪙 Tails — You Lose!",
-                description=f"You lost **{amount}** {self.config.points.name} {self.config.points.emoji}",
+                description=f"You lost **{amount}** {config.points.name} {config.points.emoji}",
                 color=discord.Color.red(),
             )
-        embed.add_field(name="New Balance", value=f"{new_balance} {self.config.points.name}", inline=True)
+        embed.add_field(name="New Balance", value=f"{new_balance} {config.points.name}", inline=True)
         flips_left = max_flips - daily_count - 1
         embed.add_field(name="Flips Remaining Today", value=str(flips_left), inline=True)
         embed.set_footer(text=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
@@ -288,8 +286,6 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
             return score
 
         lines = []
-
-        # Always show the top 3 rows; fill missing places with a placeholder
         for rank in range(1, 4):
             medal = RANK_MEDALS[rank]
             if len(entries) >= rank:
@@ -298,7 +294,6 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
             else:
                 lines.append(f"{medal} *crickets* 🏏")
 
-        # Ranks 4–10 only if users exist
         for i, entry in enumerate(entries[3:10], start=4):
             lines.append(f"{i}. <@{entry['user_id']}> — {score_text(entry)}")
 
@@ -314,4 +309,4 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
 
 
 async def setup(bot: DiscographyBot) -> None:
-    await bot.add_cog(CommandsCog(bot, bot.config))
+    await bot.add_cog(CommandsCog(bot))
