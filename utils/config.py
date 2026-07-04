@@ -1,31 +1,43 @@
-from dataclasses import dataclass, field
-from pathlib import Path
+"""
+Per-guild configuration shapes.
 
-import yaml
+In the multi-tenant build there is no config.yaml. Each guild's settings live in
+the ``guild_configs`` / ``guild_multipliers`` control-plane tables and are
+materialised into an immutable ``GuildConfig`` by the config cache
+(utils/guild_config.py). The dataclasses below mirror the attribute surface the
+cogs already use, so cog logic stays unchanged apart from *which* guild's config
+it looks up.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import timezone, tzinfo
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 @dataclass(frozen=True)
 class ChannelConfig:
-    submissions: int
-    announcements: int
-    bot_commands: int
-    leaderboard: int
-    reaction_roles: int = 0
+    submissions: int | None = None
+    announcements: int | None = None
+    bot_commands: int | None = None
+    leaderboard: int | None = None
+    reaction_roles: int | None = None
 
 
 @dataclass(frozen=True)
 class RoleConfig:
-    notification: int
-    dry_run_admin: int
-    point_awarder: int = 0
-    predict_starter: int = 0
-    reaction_role_admin: int = 0
+    notification: int | None = None
+    dry_run_admin: int | None = None
+    point_awarder: int | None = None
+    predict_starter: int | None = None
+    reaction_role_admin: int | None = None
 
 
 @dataclass(frozen=True)
 class PointsConfig:
-    name: str
-    emoji: str
+    name: str = "Points"
+    emoji: str = "🏆"
 
 
 @dataclass(frozen=True)
@@ -41,87 +53,70 @@ class CoinflipConfig:
 
 @dataclass(frozen=True)
 class PredictionsConfig:
-    # Virtual liquidity seeded on each outcome when computing dynamic odds.
-    # Higher values make odds move more slowly as bets come in; with empty
-    # pools both sides start at decimal odds of 2.0. Must be > 0.
     seed_liquidity: float = 100.0
 
 
 @dataclass(frozen=True)
 class CompetitionConfig:
-    # "dedicated" — full feature set: invalid posts are rejected, valid posts are
-    #               deleted and reposted as a voting embed, only the vote emote
-    #               is allowed to remain on it.
-    # "basic"     — lightweight mode for smaller servers: the vote emote is added
-    #               directly to single-image posts in the submissions channel.
-    #               The original message and any other reactions are left alone.
     mode: str = "dedicated"
 
 
 @dataclass(frozen=True)
-class BotConfig:
+class GuildConfig:
+    guild_id: int
     channels: ChannelConfig
     roles: RoleConfig
     points: PointsConfig
-    multiply_points: tuple[PointMultiplier, ...] = ()
-    coinflip: CoinflipConfig = field(default_factory=CoinflipConfig)
-    predictions: PredictionsConfig = field(default_factory=PredictionsConfig)
-    competition: CompetitionConfig = field(default_factory=CompetitionConfig)
+    competition: CompetitionConfig
+    coinflip: CoinflipConfig
+    predictions: PredictionsConfig
+    multiply_points: tuple[PointMultiplier, ...]
+    schedule_timezone: str = "UTC"
 
+    def tzinfo(self) -> tzinfo:
+        try:
+            return ZoneInfo(self.schedule_timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            return timezone.utc
 
-def load_config(path: str = "config.yaml") -> BotConfig:
-    with open(Path(path), "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    required = {
-        "channels": ["submissions", "announcements", "bot_commands", "leaderboard"],
-        "roles": ["notification", "dry_run_admin"],
-        "points": ["name", "emoji"],
-    }
-    for section, keys in required.items():
-        if section not in data:
-            raise ValueError(f"config.yaml missing section: '{section}'")
-        for key in keys:
-            if key not in data[section]:
-                raise ValueError(f"config.yaml missing '{section}.{key}'")
-
-    multiply_points = tuple(
-        PointMultiplier(role=int(m["role"]), multiplier=float(m["multiplier"]))
-        for m in data.get("multiplyPoints", [])
-    )
-
-    coinflip_data = data.get("coinflip", {})
-    coinflip = CoinflipConfig(
-        max_daily_flips=int(coinflip_data.get("max_daily_flips", 5)),
-    )
-
-    predictions_data = data.get("predictions", {})
-    seed_liquidity = float(predictions_data.get("seed_liquidity", 100.0))
-    if seed_liquidity <= 0:
-        raise ValueError("config.yaml 'predictions.seed_liquidity' must be > 0")
-    predictions = PredictionsConfig(seed_liquidity=seed_liquidity)
-
-    competition_data = data.get("competition", {})
-    mode = str(competition_data.get("mode", "dedicated"))
-    if mode not in ("dedicated", "basic"):
-        raise ValueError("config.yaml 'competition.mode' must be 'dedicated' or 'basic'")
-    competition = CompetitionConfig(mode=mode)
-
-    roles_data = data["roles"]
-    roles = RoleConfig(
-        notification=roles_data["notification"],
-        dry_run_admin=roles_data["dry_run_admin"],
-        point_awarder=roles_data.get("point_awarder", 0),
-        predict_starter=roles_data.get("predict_starter", 0),
-        reaction_role_admin=roles_data.get("reaction_role_admin", 0),
-    )
-
-    return BotConfig(
-        channels=ChannelConfig(**data["channels"]),
-        roles=roles,
-        points=PointsConfig(**data["points"]),
-        multiply_points=multiply_points,
-        coinflip=coinflip,
-        predictions=predictions,
-        competition=competition,
-    )
+    @classmethod
+    def from_rows(
+        cls,
+        guild_id: int,
+        config_row: dict[str, Any],
+        multiplier_rows: list[dict[str, Any]],
+    ) -> "GuildConfig":
+        """Build a GuildConfig from a guild_configs row + guild_multipliers rows."""
+        return cls(
+            guild_id=guild_id,
+            channels=ChannelConfig(
+                submissions=config_row.get("submissions_channel_id"),
+                announcements=config_row.get("announcements_channel_id"),
+                bot_commands=config_row.get("bot_commands_channel_id"),
+                leaderboard=config_row.get("leaderboard_channel_id"),
+                reaction_roles=config_row.get("reaction_roles_channel_id"),
+            ),
+            roles=RoleConfig(
+                notification=config_row.get("notification_role_id"),
+                dry_run_admin=config_row.get("dry_run_admin_role_id"),
+                point_awarder=config_row.get("point_awarder_role_id"),
+                predict_starter=config_row.get("predict_starter_role_id"),
+                reaction_role_admin=config_row.get("reaction_role_admin_role_id"),
+            ),
+            points=PointsConfig(
+                name=config_row.get("points_name") or "Points",
+                emoji=config_row.get("points_emoji") or "🏆",
+            ),
+            competition=CompetitionConfig(mode=config_row.get("competition_mode") or "dedicated"),
+            coinflip=CoinflipConfig(
+                max_daily_flips=int(config_row.get("coinflip_max_daily_flips") or 5),
+            ),
+            predictions=PredictionsConfig(
+                seed_liquidity=float(config_row.get("predictions_seed_liquidity") or 100.0),
+            ),
+            multiply_points=tuple(
+                PointMultiplier(role=int(m["role_id"]), multiplier=float(m["multiplier"]))
+                for m in multiplier_rows
+            ),
+            schedule_timezone=config_row.get("schedule_timezone") or "UTC",
+        )
