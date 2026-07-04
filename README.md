@@ -1,5 +1,13 @@
 # Discography
 
+> **Multi-tenant (SaaS) build.** One bot instance serves many Discord servers,
+> backed by a shared Postgres database with per-tenant row-level security, plus a
+> FastAPI management API for onboarding, configuration, stats, and Stripe billing.
+> Per-guild settings live in the database (not `config.yaml`) and are managed
+> through the API or the `scripts/bootstrap_tenant.py` CLI. **See
+> [DEPLOY.md](DEPLOY.md) for setup and deployment.** The `config.yaml` example
+> below is retained only as a field reference and as input to the bootstrap CLI.
+
 Automated Discord bot for running a weekly screenshot competition. Community members post screenshots in a designated channel; the bot reposts them as voting embeds, counts 🏆 reactions, and announces winners every Monday with a points system.
 
 ---
@@ -211,5 +219,5 @@ If the bot was offline at Monday 07:00 UTC and missed the announcement window, i
 
 ## Development tips
 
-- For faster slash command propagation during development, sync to a specific guild instead of globally. In `main.py`, change `await self.tree.sync()` to `await self.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))`.
+- For faster slash command propagation during development, set `DEV_GUILD_ID` in `.env` to a test guild; the bot syncs commands to it on startup in addition to the global sync.
 - Logs are written to stdout in the format `timestamp [LEVEL] module: message`.

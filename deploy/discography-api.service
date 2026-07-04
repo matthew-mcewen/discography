@@ -1,0 +1,15 @@
+[Unit]
+Description=Discography Management API
+After=network.target
+
+[Service]
+WorkingDirectory=%h/discography
+# Bound to localhost — put nginx/Caddy in front for TLS and public exposure.
+ExecStart=%h/discography/.venv/bin/uvicorn api.app:app --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

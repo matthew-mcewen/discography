@@ -1,5 +1,5 @@
 [Unit]
-Description=Discography Discord Bot
+Description=Discography Discord Bot (gateway)
 After=network.target
 
 [Service]

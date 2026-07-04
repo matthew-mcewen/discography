@@ -19,4 +19,7 @@ jobs:
             cd ~/discography
             git pull origin main
             .venv/bin/pip install -r requirements.txt --quiet
-            systemctl --user restart discography
+            # Apply DB migrations (advisory-locked; DSN must be able to CREATE TABLE).
+            .venv/bin/python -m db.migrate
+            # Restart both processes (see deploy/*.service and DEPLOY.md).
+            systemctl --user restart discography-bot discography-api
