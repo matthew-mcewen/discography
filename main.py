@@ -27,6 +27,8 @@ COGS = [
     "cogs.admin",
     "cogs.predictions",
     "cogs.reaction_roles",
+    "cogs.guess",
+    "cogs.landing_rate",
 ]
 
 

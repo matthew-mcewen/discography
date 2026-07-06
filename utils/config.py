@@ -11,6 +11,7 @@ class ChannelConfig:
     bot_commands: int
     leaderboard: int
     reaction_roles: int = 0
+    guess_output: int = 0
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,8 @@ class RoleConfig:
     point_awarder: int = 0
     predict_starter: int = 0
     reaction_role_admin: int = 0
+    guess_judge: int = 0
+    landing_rate_outcome: int = 0
 
 
 @dataclass(frozen=True)
@@ -114,6 +117,8 @@ def load_config(path: str = "config.yaml") -> BotConfig:
         point_awarder=roles_data.get("point_awarder", 0),
         predict_starter=roles_data.get("predict_starter", 0),
         reaction_role_admin=roles_data.get("reaction_role_admin", 0),
+        guess_judge=roles_data.get("guess_judge", 0),
+        landing_rate_outcome=roles_data.get("landing_rate_outcome", 0),
     )
 
     return BotConfig(
