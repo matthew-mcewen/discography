@@ -1,20 +1,20 @@
 channels:
-  submissions: 1520820805465014422        # Channel ID to monitor for image posts
-  announcements: 1520820872443859025      # Channel ID for winner announcements
-  bot_commands: 1520820836821373009       # Channel ID where users can run bot commands
-  leaderboard: 1520820946057953452        # Channel ID where the pinned leaderboard embed lives
+  submissions: 1512100442279252242        # Channel ID to monitor for image posts
+  announcements: 1501561314621919353      # Channel ID for winner announcements
+  bot_commands: 1498591942626381982       # Channel ID where users can run bot commands
+  leaderboard: 1501561314621919353        # Channel ID where the pinned leaderboard embed lives
   reaction_roles: 0                       # Channel ID where the reaction-roles panel embed lives (0 = disabled)
   guess_output: 0                         # Channel ID where /guess submissions are posted for judging (0 = disabled).
                                           # Make this channel visible only to the guess_judge role via Discord permissions.
 
 roles:
-  notification: 1520821170797150269       # Role ID pinged on winner announcements
-  dry_run_admin: 1520821170797150269      # Role ID allowed to use /dryrun-* commands
-  point_awarder: 1520821170797150269                        # Role ID allowed to use /awardpoints (0 = disabled)
-  predict_starter: 1520821170797150269                      # Role ID allowed to use /createpredict and /finishpredict (0 = disabled)
-  reaction_role_admin: 0                                     # Role ID allowed to use /reactionrole-* commands (0 = disabled)
-  guess_judge: 0                                             # Role ID that judges /guess (sees guess_output, reacts 🥇🥈🥉, runs /guess-start and /guess-count) (0 = disabled)
-  landing_rate_outcome: 0                                    # Role ID allowed to run /landing-rate-outcome (0 = disabled)
+  notification: 1521601957322686485       # Role ID pinged on winner announcements
+  dry_run_admin: 1503349513237303377      # Role ID allowed to use /dryrun-* commands
+  point_awarder: 1503349513237303377                        # Role ID allowed to use /awardpoints (0 = disabled)
+  predict_starter: 1503349513237303377                      # Role ID allowed to use /createpredict and /finishpredict (0 = disabled)
+  reaction_role_admin: 1503349513237303377                                     # Role ID allowed to use /reactionrole-* commands (0 = disabled)
+  guess_judge: 1503349513237303377                                             # Role ID that judges /guess (sees guess_output, reacts 🥇🥈🥉, runs /guess-start and /guess-count) (0 = disabled)
+  landing_rate_outcome: 1503349513237303377                                    # Role ID allowed to run /landing-rate-outcome (0 = disabled)
 
 points:
   name: "BasicMiles"
