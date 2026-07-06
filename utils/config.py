@@ -23,6 +23,8 @@ class ChannelConfig:
     bot_commands: int | None = None
     leaderboard: int | None = None
     reaction_roles: int | None = None
+    # Channel where /guess submissions are posted for judging (None = disabled).
+    guess_output: int | None = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,10 @@ class RoleConfig:
     point_awarder: int | None = None
     predict_starter: int | None = None
     reaction_role_admin: int | None = None
+    # Judges /guess: sees guess_output, reacts 🥇🥈🥉, runs /guess-start & /guess-count.
+    guess_judge: int | None = None
+    # Allowed to run /landing-rate-outcome.
+    landing_rate_outcome: int | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,7 @@ class GuildConfig:
                 bot_commands=config_row.get("bot_commands_channel_id"),
                 leaderboard=config_row.get("leaderboard_channel_id"),
                 reaction_roles=config_row.get("reaction_roles_channel_id"),
+                guess_output=config_row.get("guess_output_channel_id"),
             ),
             roles=RoleConfig(
                 notification=config_row.get("notification_role_id"),
@@ -102,6 +109,8 @@ class GuildConfig:
                 point_awarder=config_row.get("point_awarder_role_id"),
                 predict_starter=config_row.get("predict_starter_role_id"),
                 reaction_role_admin=config_row.get("reaction_role_admin_role_id"),
+                guess_judge=config_row.get("guess_judge_role_id"),
+                landing_rate_outcome=config_row.get("landing_rate_outcome_role_id"),
             ),
             points=PointsConfig(
                 name=config_row.get("points_name") or "Points",

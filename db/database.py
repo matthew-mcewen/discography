@@ -491,6 +491,35 @@ async def get_leaderboard_message_id(
     return row["leaderboard_message_id"] if row else None
 
 
+async def set_leaderboard_images_message_id(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    period_id: int,
+    message_id: int | None,
+) -> None:
+    """Store (or clear, with None) the id of the first-place companion message."""
+    async with guild_connection(pool, guild_id) as conn:
+        await conn.execute(
+            "UPDATE submission_periods SET leaderboard_images_message_id = %s WHERE id = %s",
+            (message_id, period_id),
+        )
+
+
+async def get_leaderboard_images_message_id(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    period_id: int,
+) -> int | None:
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT leaderboard_images_message_id FROM submission_periods WHERE id = %s",
+                (period_id,),
+            )
+            row = await cur.fetchone()
+    return row["leaderboard_images_message_id"] if row else None
+
+
 # ---------------------------------------------------------------------------
 # Coinflip
 # ---------------------------------------------------------------------------
@@ -899,3 +928,316 @@ async def get_guild_stats(
     result["current_period"] = dict(current_period) if current_period else None
     result["active_submission_count"] = active_submission_count
     return result
+
+
+# ---------------------------------------------------------------------------
+# Guess game
+# ---------------------------------------------------------------------------
+
+async def get_active_guess_round(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+) -> dict[str, Any] | None:
+    """The current guess round accepting submissions: active and not yet expired."""
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, started_by, started_at, expires_at, status
+                FROM guess_rounds
+                WHERE status = 'active' AND expires_at > now()
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            )
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def get_countable_guess_round(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+) -> dict[str, Any] | None:
+    """
+    The latest still-open round for counting purposes, regardless of expiry.
+    A judge can /guess-count even after the 24h submission window has lapsed.
+    """
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, started_by, started_at, expires_at, status
+                FROM guess_rounds
+                WHERE status = 'active'
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            )
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def start_guess_round(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    started_by: int,
+    expires_at: datetime,
+) -> int:
+    """Close any currently active round(s) and open a fresh one, returning its id."""
+    async with guild_connection(pool, guild_id) as conn:
+        await conn.execute(
+            "UPDATE guess_rounds SET status = 'closed', closed_at = now() WHERE status = 'active'"
+        )
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO guess_rounds (guild_id, started_by, expires_at)
+                VALUES (%s, %s, %s)
+                RETURNING id
+                """,
+                (guild_id, started_by, expires_at),
+            )
+            row = await cur.fetchone()
+    return row["id"]
+
+
+async def get_user_guess_categories(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    round_id: int,
+    user_id: int,
+) -> set[str]:
+    """Categories this user has already submitted (and thus locked) in the round."""
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT category FROM guesses WHERE round_id = %s AND user_id = %s",
+                (round_id, user_id),
+            )
+            rows = await cur.fetchall()
+    return {r["category"] for r in rows}
+
+
+async def create_guess(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    round_id: int,
+    user_id: int,
+    category: str,
+    guess_value: str,
+) -> int:
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO guesses (guild_id, round_id, user_id, category, guess_value)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (guild_id, round_id, user_id, category, guess_value),
+            )
+            row = await cur.fetchone()
+    return row["id"]
+
+
+async def set_guess_output_message(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    guess_id: int,
+    message_id: int,
+) -> None:
+    async with guild_connection(pool, guild_id) as conn:
+        await conn.execute(
+            "UPDATE guesses SET output_message_id = %s WHERE id = %s",
+            (message_id, guess_id),
+        )
+
+
+async def get_guesses_for_round(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    round_id: int,
+) -> list[dict[str, Any]]:
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT g.id, g.user_id, g.category, g.guess_value, g.output_message_id,
+                       u.display_name
+                FROM guesses g
+                JOIN users u ON u.user_id = g.user_id AND u.guild_id = g.guild_id
+                WHERE g.round_id = %s
+                ORDER BY g.submitted_at ASC
+                """,
+                (round_id,),
+            )
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def close_guess_round(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    round_id: int,
+) -> None:
+    async with guild_connection(pool, guild_id) as conn:
+        await conn.execute(
+            "UPDATE guess_rounds SET status = 'closed', closed_at = now() WHERE id = %s",
+            (round_id,),
+        )
+
+
+async def save_guess_results(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    results: list[dict[str, Any]],
+) -> None:
+    """results = [{"guess_id": int, "points_awarded": int}, ...]"""
+    async with guild_connection(pool, guild_id) as conn:
+        for r in results:
+            await conn.execute(
+                "UPDATE guesses SET points_awarded = %s WHERE id = %s",
+                (r["points_awarded"], r["guess_id"]),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Landing-rate predictor
+# ---------------------------------------------------------------------------
+
+async def get_open_landing_round(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+) -> dict[str, Any] | None:
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, status, outcome, channel_id
+                FROM landing_rate_rounds
+                WHERE status = 'open'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def get_or_create_open_landing_round(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    channel_id: int,
+) -> dict[str, Any]:
+    """Return the open landing-rate round, opening one if none exists."""
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, status, outcome, channel_id
+                FROM landing_rate_rounds
+                WHERE status = 'open'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+            row = await cur.fetchone()
+            if row is not None:
+                return dict(row)
+            await cur.execute(
+                """
+                INSERT INTO landing_rate_rounds (guild_id, channel_id)
+                VALUES (%s, %s)
+                RETURNING id, status, outcome, channel_id
+                """,
+                (guild_id, channel_id),
+            )
+            row = await cur.fetchone()
+    return dict(row)
+
+
+async def place_landing_bet_and_deduct(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    round_id: int,
+    user_id: int,
+    guess: int,
+    amount: int,
+) -> bool:
+    """
+    Deduct the stake and record a landing-rate bet atomically.
+    Returns False (without changes) if the user has already bet on this round.
+    """
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT 1 FROM landing_rate_bets WHERE round_id = %s AND user_id = %s",
+                (round_id, user_id),
+            )
+            if await cur.fetchone():
+                return False
+
+        await conn.execute(
+            "UPDATE users SET points = points - %s, updated_at = now() WHERE user_id = %s",
+            (amount, user_id),
+        )
+        await conn.execute(
+            """
+            INSERT INTO landing_rate_bets (guild_id, round_id, user_id, guess, amount)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (guild_id, round_id, user_id, guess, amount),
+        )
+    return True
+
+
+async def get_landing_bets(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    round_id: int,
+) -> list[dict[str, Any]]:
+    async with guild_connection(pool, guild_id) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT b.id, b.user_id, b.guess, b.amount, u.display_name
+                FROM landing_rate_bets b
+                JOIN users u ON u.user_id = b.user_id AND u.guild_id = b.guild_id
+                WHERE b.round_id = %s
+                ORDER BY b.placed_at ASC
+                """,
+                (round_id,),
+            )
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def close_landing_round(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    round_id: int,
+    outcome: int,
+) -> None:
+    async with guild_connection(pool, guild_id) as conn:
+        await conn.execute(
+            """
+            UPDATE landing_rate_rounds
+            SET status = 'closed', outcome = %s, closed_at = now()
+            WHERE id = %s
+            """,
+            (outcome, round_id),
+        )
+
+
+async def save_landing_results(
+    pool: psycopg_pool.AsyncConnectionPool,
+    guild_id: int,
+    results: list[dict[str, Any]],
+) -> None:
+    """results = [{"bet_id": int, "points_change": int}, ...]"""
+    async with guild_connection(pool, guild_id) as conn:
+        for r in results:
+            await conn.execute(
+                "UPDATE landing_rate_bets SET points_change = %s WHERE id = %s",
+                (r["points_change"], r["bet_id"]),
+            )

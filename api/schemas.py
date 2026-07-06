@@ -65,11 +65,14 @@ class ConfigUpdate(BaseModel):
     bot_commands_channel_id: Optional[int] = None
     leaderboard_channel_id: Optional[int] = None
     reaction_roles_channel_id: Optional[int] = None
+    guess_output_channel_id: Optional[int] = None
     notification_role_id: Optional[int] = None
     dry_run_admin_role_id: Optional[int] = None
     point_awarder_role_id: Optional[int] = None
     predict_starter_role_id: Optional[int] = None
     reaction_role_admin_role_id: Optional[int] = None
+    guess_judge_role_id: Optional[int] = None
+    landing_rate_outcome_role_id: Optional[int] = None
     points_name: Optional[str] = Field(default=None, max_length=100)
     points_emoji: Optional[str] = Field(default=None, max_length=100)
     competition_mode: Optional[Literal["dedicated", "basic"]] = None

@@ -53,6 +53,8 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
                 "`/leaderboard` — View the current weekly leaderboard\n"
                 "`/coinflip [amount]` — Bet points on a coin flip\n"
                 "`/predict [outcome] [amount]` — Bet on the open prediction\n"
+                "`/guess [airports] [aircraft]` — Submit your Airports/Aircraft guess\n"
+                "`/landing-rate [landing_rate] [amount]` — Bet on a landing-rate outcome\n"
                 "`/help` — Show this message"
             ),
             inline=False,
@@ -72,6 +74,24 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
             embed.add_field(
                 name="Point Awarder",
                 value="`/awardpoints [user] [amount]` — Directly award points to a user",
+                inline=False,
+            )
+
+        if config.roles.guess_judge and config.roles.guess_judge in user_role_ids:
+            embed.add_field(
+                name="Guess Judge",
+                value=(
+                    "`/guess-start` — Start a new 24h guess round\n"
+                    "`/guess-count [firstplace] [secondplace] [thirdplace] [participation]` "
+                    "— Tally 🥇🥈🥉 reactions and award points"
+                ),
+                inline=False,
+            )
+
+        if config.roles.landing_rate_outcome and config.roles.landing_rate_outcome in user_role_ids:
+            embed.add_field(
+                name="Landing Rate",
+                value="`/landing-rate-outcome [landing_rate]` — Set the outcome and pay out winners",
                 inline=False,
             )
 
@@ -173,18 +193,30 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
             logger.error("Guild %s: leaderboard channel %s not found.", guild_id, config.channels.leaderboard)
             return embed
 
+        await self._upsert_leaderboard_message(guild_id, period, channel, embed)
+        await self._update_first_place_images(guild_id, config, period, channel)
+        return embed
+
+    async def _upsert_leaderboard_message(
+        self,
+        guild_id: int,
+        period: dict[str, Any],
+        channel: discord.abc.Messageable,
+        embed: discord.Embed,
+    ) -> None:
+        """Edit the pinned leaderboard message in-place, or post + pin a new one."""
         stored_id = await db.get_leaderboard_message_id(self._pool, guild_id, period["id"])
 
         if stored_id is not None:
             try:
                 msg = await channel.fetch_message(stored_id)
                 await msg.edit(embed=embed)
-                return embed
+                return
             except discord.NotFound:
                 logger.warning("Guild %s: leaderboard message %s deleted; reposting.", guild_id, stored_id)
             except discord.HTTPException as exc:
                 logger.error("Guild %s: failed to edit leaderboard message: %s", guild_id, exc)
-                return embed
+                return
 
         try:
             msg = await channel.send(embed=embed)
@@ -201,7 +233,95 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
         except discord.HTTPException as exc:
             logger.error("Guild %s: failed to post leaderboard message: %s", guild_id, exc)
 
-        return embed
+    async def _update_first_place_images(
+        self,
+        guild_id: int,
+        config: GuildConfig,
+        period: dict[str, Any],
+        channel: discord.abc.Messageable,
+    ) -> None:
+        """
+        Maintain a companion message, pinned next to the leaderboard, showing the
+        current first-place winner's best screenshot. If several users are tied for
+        first, each of their screenshots is shown (one embed per winner). The
+        message is edited in place after every count and removed when no one has a
+        vote yet.
+        """
+        top_subs = await db.get_top_submission_per_user(self._pool, guild_id, period["id"], limit=25)
+        first_place: list[dict[str, Any]] = []
+        if top_subs:
+            max_net = top_subs[0]["net_trophy_count"]
+            if max_net > 0:
+                first_place = [s for s in top_subs if s["net_trophy_count"] == max_net]
+
+        stored_img_id = await db.get_leaderboard_images_message_id(self._pool, guild_id, period["id"])
+
+        if not first_place:
+            # No clear leader yet — remove a stale companion message if present.
+            if stored_img_id is not None:
+                try:
+                    old = await channel.fetch_message(stored_img_id)
+                    await old.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+                await db.set_leaderboard_images_message_id(self._pool, guild_id, period["id"], None)
+            return
+
+        # Build one image embed per first-place winner, refreshing CDN URLs from
+        # the live submission message (deleting a message invalidates its URL).
+        submissions_ch = (
+            self.bot.get_channel(config.channels.submissions) if config.channels.submissions else None
+        )
+        image_embeds: list[discord.Embed] = []
+        for sub in first_place[:10]:  # Discord allows at most 10 embeds per message
+            image_url = sub["image_url"]
+            if submissions_ch is not None:
+                try:
+                    live = await submissions_ch.fetch_message(sub["embed_message_id"])
+                    if live.attachments:
+                        image_url = live.attachments[0].url
+                    elif live.embeds and live.embeds[0].image:
+                        image_url = live.embeds[0].image.proxy_url or image_url
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+            img_embed = discord.Embed(
+                description=f"🥇 <@{sub['user_id']}> — {sub['net_trophy_count']} 🏆",
+                color=discord.Color.gold(),
+            )
+            img_embed.set_image(url=image_url)
+            image_embeds.append(img_embed)
+
+        content = "🥇 **Current first place**" + (" (tied)" if len(image_embeds) > 1 else "")
+
+        if stored_img_id is not None:
+            try:
+                msg = await channel.fetch_message(stored_img_id)
+                await msg.edit(content=content, embeds=image_embeds)
+                return
+            except discord.NotFound:
+                logger.warning(
+                    "Guild %s: first-place images message %s was deleted; reposting.",
+                    guild_id,
+                    stored_img_id,
+                )
+            except discord.HTTPException as exc:
+                logger.error("Guild %s: failed to edit first-place images message: %s", guild_id, exc)
+                return
+
+        try:
+            msg = await channel.send(content=content, embeds=image_embeds)
+            try:
+                await msg.pin()
+            except discord.HTTPException as exc:
+                if exc.code == 30003:
+                    logger.warning("Guild %s: pin limit reached; first-place images not pinned.", guild_id)
+                else:
+                    raise
+            await db.set_leaderboard_images_message_id(self._pool, guild_id, period["id"], msg.id)
+        except discord.Forbidden:
+            logger.error("Guild %s: missing permissions to post/pin first-place images.", guild_id)
+        except discord.HTTPException as exc:
+            logger.error("Guild %s: failed to post first-place images message: %s", guild_id, exc)
 
     # ------------------------------------------------------------------
     # /coinflip
@@ -285,17 +405,34 @@ class CommandsCog(commands.Cog, name="CommandsCog"):
                 return f"[{score}]({sub_url_base}/{embed_id})"
             return score
 
+        entries = entries[:10]
         lines = []
-        for rank in range(1, 4):
-            medal = RANK_MEDALS[rank]
-            if len(entries) >= rank:
-                entry = entries[rank - 1]
-                lines.append(f"{medal} <@{entry['user_id']}> — {score_text(entry)}")
-            else:
-                lines.append(f"{medal} *crickets* 🏏")
 
-        for i, entry in enumerate(entries[3:10], start=4):
-            lines.append(f"{i}. <@{entry['user_id']}> — {score_text(entry)}")
+        if not entries:
+            # Empty board — show the podium placeholders.
+            for rank in range(1, 4):
+                lines.append(f"{RANK_MEDALS[rank]} *crickets* 🏏")
+        else:
+            # Standard competition ranking: tied scores share a rank (and its
+            # medal), and each tied user gets its own duplicated line. The next
+            # distinct score jumps to 1 + its index, so a rank is skipped after a
+            # tie (e.g. two 🥇 then 🥉, with 🥈 skipped).
+            prev_score = None
+            rank = 0
+            for i, entry in enumerate(entries):
+                score = entry["net_trophy_count"]
+                if score != prev_score:
+                    rank = i + 1
+                    prev_score = score
+                label = RANK_MEDALS.get(rank, f"{rank}.")
+                lines.append(f"{label} <@{entry['user_id']}> — {score_text(entry)}")
+
+            # Preserve the podium look on a small board with no ties: pad the
+            # remaining medal spots with placeholders.
+            distinct_scores = len({e["net_trophy_count"] for e in entries})
+            if len(entries) < 3 and distinct_scores == len(entries):
+                for pad_rank in range(len(entries) + 1, 4):
+                    lines.append(f"{RANK_MEDALS[pad_rank]} *crickets* 🏏")
 
         embed = discord.Embed(
             title="🏆 Weekly Leaderboard",
