@@ -4,7 +4,7 @@ channels:
   bot_commands: 1498591942626381982       # Channel ID where users can run bot commands
   leaderboard: 1501561314621919353        # Channel ID where the pinned leaderboard embed lives
   reaction_roles: 0                       # Channel ID where the reaction-roles panel embed lives (0 = disabled)
-  guess_output: 0                         # Channel ID where /guess submissions are posted for judging (0 = disabled).
+  guess_output: 1523560448287445143                         # Channel ID where /guess submissions are posted for judging (0 = disabled).
                                           # Make this channel visible only to the guess_judge role via Discord permissions.
 
 roles:
