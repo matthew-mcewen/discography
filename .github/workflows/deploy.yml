@@ -16,6 +16,7 @@ jobs:
           key: ${{ secrets.DROPLET_SSH_KEY }}
           script: |
             set -e
+            export XDG_RUNTIME_DIR=/run/user/$(id -u)
             cd ~/discography
             git pull origin main
             .venv/bin/pip install -r requirements.txt --quiet
